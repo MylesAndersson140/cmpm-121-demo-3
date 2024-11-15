@@ -4,38 +4,122 @@ import "./leafletWorkaround.ts";
 import leaflet from "leaflet";
 import luck from "./luck.ts";
 
+//Inspired by the flyweight cell representations found on slide 20.
+interface Cell {
+  readonly i: number;
+  readonly j: number;
+}
+
+class Board {
+  readonly tileWidth: number;
+  readonly tileVisibilityRadius: number; //neighboorhood size (def: 8)
+  private readonly knownCells: Map<string, Cell>;
+
+  constructor(tileWidth: number, tileVisibilityRadius: number) {
+    this.tileWidth = tileWidth;
+    this.tileVisibilityRadius = tileVisibilityRadius;
+    this.knownCells = new Map();
+  }
+
+  private getCanonicalCell(cell: Cell): Cell {
+    const { i, j } = cell;
+    const key = [i, j].toString();
+
+    if (!this.knownCells.has(key)) {
+      this.knownCells.set(key, { i, j });
+    }
+    return this.knownCells.get(key)!;
+  }
+
+  //converts coordinates to integer based grid cell numbers
+  getCellForPoint(point: leaflet.LatLng): Cell {
+    return this.getCanonicalCell({
+      i: Math.floor(point.lat * 10000),
+      j: Math.floor(point.lng * 10000),
+    });
+  }
+
+  //converts from integer based grid cell numbers back to coordinates to determine the bounds.
+  getCellBounds(cell: Cell): leaflet.LatLngBounds {
+    return leaflet.latLngBounds([
+      [cell.i / 10000, cell.j / 10000],
+      [(cell.i + 1) / 10000, (cell.j + 1) / 10000],
+    ]);
+  }
+
+  //checks a -8 to 8 range to determine which cells to include for a cache
+  getCellsNearPoint(point: leaflet.LatLng): Cell[] {
+    const resultCells: Cell[] = [];
+    const originCell = this.getCellForPoint(point);
+
+    for (
+      let i = -this.tileVisibilityRadius;
+      i <= this.tileVisibilityRadius;
+      i++
+    ) {
+      for (
+        let j = -this.tileVisibilityRadius;
+        j <= this.tileVisibilityRadius;
+        j++
+      ) {
+        resultCells.push(this.getCanonicalCell({
+          i: originCell.i + i,
+          j: originCell.j + j,
+        }));
+      }
+    }
+
+    return resultCells;
+  }
+}
+
+//Allows greater coin expression
+interface Coin {
+  value: number;
+  origin: Cell;
+  serial: number;
+}
+
 //Memento pattern for cache states as depicted on slide 21
 class GameState {
-  carriedCoins: number[] = [];
-  cacheContents = new Map<string, number[]>();
+  carriedCoins: Coin[] = [];
+  cacheContents = new Map<string, Coin[]>();
 
-  getCarriedCoins(): number[] {
+  getCacheKey(cell: Cell): string {
+    return `${cell.i}, ${cell.j}`;
+  }
+
+  //spread operator to maintain encapsulation and protect from external modifications
+  getCarriedCoins(): Coin[] {
     return [...this.carriedCoins];
   }
-  getCacheCoins(cacheId: string): number[] {
-    return [...(this.cacheContents.get(cacheId) || [])];
+
+  getCacheCoins(cell: Cell): Coin[] {
+    return [...(this.cacheContents.get(this.getCacheKey(cell)) || [])];
   }
 
-  collectCoin(cacheId: string) {
-    const cache = this.cacheContents.get(cacheId) || [];
+  collectCoin(cell: Cell) {
+    const key = this.getCacheKey(cell);
+    const cache = this.cacheContents.get(key) || [];
     const coin = cache.pop();
     if (coin !== undefined) {
-      this.cacheContents.set(cacheId, cache);
+      this.cacheContents.set(key, cache);
       this.carriedCoins.push(coin);
     }
   }
 
-  depositCoin(cacheId: string) {
+  depositCoin(cell: Cell) {
     const coin = this.carriedCoins.pop();
     if (coin !== undefined) {
-      const cache = this.cacheContents.get(cacheId) || [];
+      const key = this.getCacheKey(cell);
+      const cache = this.cacheContents.get(key) || [];
       cache.push(coin);
-      this.cacheContents.set(cacheId, cache);
+      this.cacheContents.set(key, cache);
     }
   }
 
-  initializeCache(cacheId: string, coins: number[]) {
-    this.cacheContents.set(cacheId, coins);
+  initializeCache(cell: Cell, coins: Coin[]) {
+    this.cacheContents.set(this.getCacheKey(cell), coins);
   }
 }
 
@@ -50,8 +134,13 @@ class GameFacade {
   map: leaflet.Map;
   gameState: GameState;
   playerMarker: leaflet.Marker;
+  board: Board;
 
   constructor() {
+    this.board = new Board(
+      GameFacade.TILE_DEGREES,
+      GameFacade.NEIGHBORHOOD_SIZE,
+    );
     this.gameState = new GameState();
     this.map = this.initializeMap();
     this.playerMarker = this.initializePlayer();
@@ -85,68 +174,66 @@ class GameFacade {
   }
 
   initializeCaches() {
-    //creating a range from -8 to 8 around the player
-    const classroomArea = Array.from(
-      { length: GameFacade.NEIGHBORHOOD_SIZE * 2 + 1 },
-      (_, i) => i - GameFacade.NEIGHBORHOOD_SIZE,
-    );
+    const nearbyCells = this.board.getCellsNearPoint(GameFacade.CLASSROOM);
 
-    //based on luck value place a cache at the given location
-    classroomArea.forEach((x) => {
-      classroomArea.forEach((y) => {
-        //fed into the luck function for potential cache locations
-        const luckString = `${x}, ${y}`;
-        if (luck(luckString) < GameFacade.CACHE_PROBABILITY) {
-          this.createCache(x, y);
-        }
-      });
+    nearbyCells.forEach((cell) => {
+      const luckyString = `${cell.i},${cell.j}`;
+      if (luck(luckyString) < GameFacade.CACHE_PROBABILITY) {
+        this.createCache(cell);
+      }
     });
   }
 
   //inspired by example.ts
-  createCache(i: number, j: number) {
-    const bounds = leaflet.latLngBounds([
-      [
-        GameFacade.CLASSROOM.lat + i * GameFacade.TILE_DEGREES,
-        GameFacade.CLASSROOM.lng + j * GameFacade.TILE_DEGREES,
-      ],
-      [
-        GameFacade.CLASSROOM.lat + (i + 1) * GameFacade.TILE_DEGREES,
-        GameFacade.CLASSROOM.lng + (j + 1) * GameFacade.TILE_DEGREES,
-      ],
-    ]);
-
+  createCache(cell: Cell) {
+    const bounds = this.board.getCellBounds(cell);
     const cache = leaflet.rectangle(bounds);
     cache.addTo(this.map);
 
-    const cacheId = `${i},${j}`;
     //inspired from example.ts
-    //generates coin values and determines the coordinate location (i,j)
-    const coins = Array.from({
-      length: Math.floor(luck([i, j, "coins"].toString()) * 5) + 1,
-    }, (_, idx) => Math.floor(luck([i, j, idx].toString()) * 100));
+    //generates coin values and determines the coordinate location (i,j), and serial number
+    const coins: Coin[] = Array.from({
+      length: Math.floor(luck([cell.i, cell.j, "coins"].toString()) * 5) + 1,
+    }, (_, idx) => ({
+      value: Math.floor(luck([cell.i, cell.j, idx].toString()) * 100),
+      origin: cell,
+      serial: idx,
+    }));
 
-    this.gameState.initializeCache(cacheId, coins);
+    this.gameState.initializeCache(cell, coins);
 
     cache.bindPopup(() => {
       const div = document.createElement("div");
+
+      //compact coin representation
+      const compactRep = (coin: Coin) =>
+        `${coin.value}(${coin.origin.i}:${coin.origin.j}#${coin.serial})`;
+
+      //allows for the explicit showing of coin representation on user end
       div.innerHTML = `
         <div>Cache contents: ${
-        this.gameState.getCacheCoins(cacheId).join(", ")
+        this.gameState.getCacheCoins(cell)
+          .map(compactRep)
+          .join(", ")
       }</div>
-        <div>Carrying: ${this.gameState.getCarriedCoins().join(", ")}</div>
+      </div>
+        <div>Carrying: ${
+        this.gameState.getCarriedCoins()
+          .map(compactRep)
+          .join(", ")
+      }</div>
         <button id="collect">Collect</button>
         <button id="deposit">Deposit</button>
         `;
 
       //Event listeners inspired by example.ts
       div.querySelector("#collect")?.addEventListener("click", () => {
-        this.gameState.collectCoin(cacheId);
+        this.gameState.collectCoin(cell);
         cache.closePopup();
       });
 
       div.querySelector("#deposit")?.addEventListener("click", () => {
-        this.gameState.depositCoin(cacheId);
+        this.gameState.depositCoin(cell);
         cache.closePopup();
       });
 
