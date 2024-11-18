@@ -1,6 +1,3 @@
 # cmpm-121-demo-3
 
-This is the default `README.md` file for the D3 projects. If the student is
-aware of what's going on in their project, they should immediately replace this
-with something more descriptive. It sure would be embarrassing if they forgot to
-do that...
+Program that creates an environment where the player is dropped on the map and is able to move around and interact with caches. Caches contain coins and the player is able to collect/deposit them.
