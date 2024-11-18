@@ -83,3 +83,9 @@ button:focus-visible {
     background-color: #f9f9f9;
   }
 }
+
+.control-row {
+  display: flex;
+  justify-content: center;
+  gap: 5px;
+}

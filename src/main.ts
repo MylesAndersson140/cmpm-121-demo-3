@@ -80,9 +80,16 @@ interface Coin {
   serial: number;
 }
 
+interface CacheMemento {
+  cell: Cell;
+  coins: Coin[];
+  isDiscovered: boolean;
+}
+
 //Memento pattern for cache states as depicted on slide 21
 class GameState {
   carriedCoins: Coin[] = [];
+  private cacheStates = new Map<string, CacheMemento>();
   cacheContents = new Map<string, Coin[]>();
 
   getCacheKey(cell: Cell): string {
@@ -98,6 +105,38 @@ class GameState {
     return [...(this.cacheContents.get(this.getCacheKey(cell)) || [])];
   }
 
+  saveCache(cell: Cell, coins: Coin[]) {
+    const key = this.getCacheKey(cell);
+    const existingInventory = this.cacheStates.get(key);
+
+    //preserve discovered state
+    const memento: CacheMemento = {
+      cell,
+      coins,
+      isDiscovered: existingInventory ? existingInventory.isDiscovered : false,
+    };
+
+    this.cacheStates.set(key, memento);
+  }
+
+  getCache(cell: Cell): CacheMemento | undefined {
+    return this.cacheStates.get(this.getCacheKey(cell));
+  }
+
+  discoverCache(cell: Cell) {
+    const key = this.getCacheKey(cell);
+    const memento = this.cacheStates.get(key);
+    if (memento) {
+      memento.isDiscovered = true;
+      this.cacheStates.set(key, memento);
+    }
+  }
+
+  isCacheDiscovered(cell: Cell): boolean {
+    const memento = this.cacheStates.get(this.getCacheKey(cell));
+    return memento ? memento.isDiscovered : false;
+  }
+
   collectCoin(cell: Cell) {
     const key = this.getCacheKey(cell);
     const cache = this.cacheContents.get(key) || [];
@@ -110,26 +149,38 @@ class GameState {
 
   depositCoin(cell: Cell) {
     const coin = this.carriedCoins.pop();
-    if (coin !== undefined) {
+    if (coin) {
       const key = this.getCacheKey(cell);
-      const cache = this.cacheContents.get(key) || [];
-      cache.push(coin);
-      this.cacheContents.set(key, cache);
+      const memento = this.cacheStates.get(key);
+      if (memento) {
+        memento.coins.push(coin);
+        this.cacheStates.set(key, memento);
+      } else {
+        this.saveCache(cell, [coin]);
+      }
     }
   }
 
   initializeCache(cell: Cell, coins: Coin[]) {
-    this.cacheContents.set(this.getCacheKey(cell), coins);
+    const key = this.getCacheKey(cell);
+    const existingMemento = this.cacheStates.get(key);
+
+    if (!existingMemento) {
+      this.saveCache(cell, coins);
+    }
   }
 }
 
 //Facade Pattern
 class GameFacade {
+  activeCaches: Map<string, leaflet.Rectangle> = new Map();
   //gameplay parameters found in example.ts
   static CLASSROOM = leaflet.latLng(36.98949379578401, -122.06277128548504);
   static TILE_DEGREES = 1e-4;
   static NEIGHBORHOOD_SIZE = 8;
   static CACHE_PROBABILITY = 0.1;
+
+  static MOVE_DISTANCE = 0.00004;
 
   map: leaflet.Map;
   gameState: GameState;
@@ -141,10 +192,156 @@ class GameFacade {
       GameFacade.TILE_DEGREES,
       GameFacade.NEIGHBORHOOD_SIZE,
     );
+
     this.gameState = new GameState();
     this.map = this.initializeMap();
     this.playerMarker = this.initializePlayer();
     this.initializeCaches();
+    this.initializeMovementControls();
+  }
+
+  //Will refactor later...
+  moveNorth() {
+    const currentPos = this.playerMarker.getLatLng();
+    this.playerMarker.setLatLng([
+      currentPos.lat + GameFacade.MOVE_DISTANCE,
+      currentPos.lng,
+    ]);
+    this.updatePlayerPosition();
+  }
+  moveEast() {
+    const currentPos = this.playerMarker.getLatLng();
+    this.playerMarker.setLatLng([
+      currentPos.lat,
+      currentPos.lng + GameFacade.MOVE_DISTANCE,
+    ]);
+    this.updatePlayerPosition();
+  }
+  moveSouth() {
+    const currentPos = this.playerMarker.getLatLng();
+    this.playerMarker.setLatLng([
+      currentPos.lat - GameFacade.MOVE_DISTANCE,
+      currentPos.lng,
+    ]);
+    this.updatePlayerPosition();
+  }
+  moveWest() {
+    const currentPos = this.playerMarker.getLatLng();
+    this.playerMarker.setLatLng([
+      currentPos.lat,
+      currentPos.lng - GameFacade.MOVE_DISTANCE,
+    ]);
+    this.updatePlayerPosition();
+  }
+
+  updatePlayerPosition() {
+    const newPos = this.playerMarker.getLatLng();
+
+    //Ensures the map moves with the player
+    this.map.panTo(newPos);
+
+    //this.playerMarker.setTooltipContent(`Position:${newPos.lat.toFixed(5)}, ${newPos.lng.toFixed(5)}`);
+
+    this.updateVisibleCaches(newPos);
+  }
+
+  updateVisibleCaches(position: leaflet.LatLng) {
+    //get current position
+    const nearbyCells = this.board.getCellsNearPoint(position);
+    const newCacheKeys = new Set<string>();
+
+    //
+    nearbyCells.forEach((cell) => {
+      const cacheKey = `${cell.i},${cell.j}`;
+      newCacheKeys.add(cacheKey);
+
+      //
+      if (!this.activeCaches.has(cacheKey)) {
+        const existingMemento = this.gameState.getCache(cell);
+
+        if (existingMemento) {
+          this.createCacheFromMemento(cell, existingMemento);
+        } else if (luck(cacheKey) < GameFacade.CACHE_PROBABILITY) {
+          this.createNewCache(cell);
+        }
+      }
+    });
+
+    //remove caches out of range
+    for (const [key, cache] of this.activeCaches.entries()) {
+      if (!newCacheKeys.has(key)) {
+        cache.remove();
+        this.activeCaches.delete(key);
+      }
+    }
+  }
+
+  createNewCache(cell: Cell) {
+    // Generate new coins
+    const coins: Coin[] = Array.from({
+      length: Math.floor(luck([cell.i, cell.j, "coins"].toString()) * 5) + 1,
+    }, (_, idx) => ({
+      value: Math.floor(luck([cell.i, cell.j, idx].toString()) * 100),
+      origin: cell,
+      serial: idx,
+    }));
+
+    // Save initial state
+    this.gameState.initializeCache(cell, coins);
+
+    // Create visual representation
+    this.createCache(cell);
+  }
+
+  createCacheFromMemento(cell: Cell, memento: CacheMemento) {
+    // Create visual representation with existing state
+    this.createCache(cell);
+
+    // Mark as discovered if it was previously discovered
+    if (memento.isDiscovered) {
+      this.gameState.discoverCache(cell);
+    }
+  }
+
+  initializeMovementControls() {
+    document.getElementById("moveNorth")?.addEventListener(
+      "click",
+      () => this.moveNorth(),
+    );
+    document.getElementById("moveEast")?.addEventListener(
+      "click",
+      () => this.moveEast(),
+    );
+    document.getElementById("moveSouth")?.addEventListener(
+      "click",
+      () => this.moveSouth(),
+    );
+    document.getElementById("moveWest")?.addEventListener(
+      "click",
+      () => this.moveWest(),
+    );
+
+    //Keyboard controls
+    document.addEventListener("keydown", (e) => {
+      switch (e.key) {
+        case "ArrowUp":
+        case "w":
+          this.moveNorth();
+          break;
+        case "ArrowDown":
+        case "s":
+          this.moveSouth();
+          break;
+        case "ArrowRight":
+        case "d":
+          this.moveEast();
+          break;
+        case "ArrowLeft":
+        case "a":
+          this.moveWest();
+          break;
+      }
+    });
   }
 
   //current starting location inspired by example.ts
@@ -188,21 +385,23 @@ class GameFacade {
   createCache(cell: Cell) {
     const bounds = this.board.getCellBounds(cell);
     const cache = leaflet.rectangle(bounds);
+
+    // Style based on discovery state
+    if (this.gameState.isCacheDiscovered(cell)) {
+      cache.setStyle({ color: "#4a4" }); // discovered caches are green
+    } else {
+      cache.setStyle({ color: "#44f" }); // undiscovered caches are blue
+    }
+
     cache.addTo(this.map);
 
-    //inspired from example.ts
-    //generates coin values and determines the coordinate location (i,j), and serial number
-    const coins: Coin[] = Array.from({
-      length: Math.floor(luck([cell.i, cell.j, "coins"].toString()) * 5) + 1,
-    }, (_, idx) => ({
-      value: Math.floor(luck([cell.i, cell.j, idx].toString()) * 100),
-      origin: cell,
-      serial: idx,
-    }));
-
-    this.gameState.initializeCache(cell, coins);
+    const cacheKey = `${cell.i},${cell.j}`;
+    this.activeCaches.set(cacheKey, cache);
 
     cache.bindPopup(() => {
+      //mark cache as discovered when opened
+      this.gameState.discoverCache(cell);
+      cache.setStyle({ color: "#4a4" });
       const div = document.createElement("div");
 
       //compact coin representation
