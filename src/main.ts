@@ -89,8 +89,7 @@ interface CacheMemento {
 //Memento pattern for cache states as depicted on slide 21
 class GameState {
   carriedCoins: Coin[] = [];
-  private cacheStates = new Map<string, CacheMemento>();
-  cacheContents = new Map<string, Coin[]>();
+  cacheStates = new Map<string, CacheMemento>();
 
   getCacheKey(cell: Cell): string {
     return `${cell.i}, ${cell.j}`;
@@ -102,7 +101,8 @@ class GameState {
   }
 
   getCacheCoins(cell: Cell): Coin[] {
-    return [...(this.cacheContents.get(this.getCacheKey(cell)) || [])];
+    const memento = this.cacheStates.get(this.getCacheKey(cell));
+    return memento ? [...memento.coins] : [];
   }
 
   saveCache(cell: Cell, coins: Coin[]) {
@@ -139,11 +139,11 @@ class GameState {
 
   collectCoin(cell: Cell) {
     const key = this.getCacheKey(cell);
-    const cache = this.cacheContents.get(key) || [];
-    const coin = cache.pop();
-    if (coin !== undefined) {
-      this.cacheContents.set(key, cache);
+    const memento = this.cacheStates.get(key);
+    if (memento && memento.coins.length > 0) {
+      const coin = memento.coins.pop()!;
       this.carriedCoins.push(coin);
+      this.cacheStates.set(key, memento);
     }
   }
 
@@ -250,12 +250,12 @@ class GameFacade {
     const nearbyCells = this.board.getCellsNearPoint(position);
     const newCacheKeys = new Set<string>();
 
-    //
+    //loops through all cells within visibility
     nearbyCells.forEach((cell) => {
       const cacheKey = `${cell.i},${cell.j}`;
       newCacheKeys.add(cacheKey);
 
-      //
+      //checks if cache is visible and ensures no duplication
       if (!this.activeCaches.has(cacheKey)) {
         const existingMemento = this.gameState.getCache(cell);
 
@@ -277,7 +277,7 @@ class GameFacade {
   }
 
   createNewCache(cell: Cell) {
-    // Generate new coins
+    //Generate new coins
     const coins: Coin[] = Array.from({
       length: Math.floor(luck([cell.i, cell.j, "coins"].toString()) * 5) + 1,
     }, (_, idx) => ({
@@ -286,18 +286,14 @@ class GameFacade {
       serial: idx,
     }));
 
-    // Save initial state
-    this.gameState.initializeCache(cell, coins);
+    this.gameState.saveCache(cell, coins);
 
-    // Create visual representation
     this.createCache(cell);
   }
 
   createCacheFromMemento(cell: Cell, memento: CacheMemento) {
-    // Create visual representation with existing state
     this.createCache(cell);
 
-    // Mark as discovered if it was previously discovered
     if (memento.isDiscovered) {
       this.gameState.discoverCache(cell);
     }
@@ -376,7 +372,7 @@ class GameFacade {
     nearbyCells.forEach((cell) => {
       const luckyString = `${cell.i},${cell.j}`;
       if (luck(luckyString) < GameFacade.CACHE_PROBABILITY) {
-        this.createCache(cell);
+        this.createNewCache(cell);
       }
     });
   }
@@ -386,7 +382,7 @@ class GameFacade {
     const bounds = this.board.getCellBounds(cell);
     const cache = leaflet.rectangle(bounds);
 
-    // Style based on discovery state
+    //Helps the player see which caches theyve interacted with
     if (this.gameState.isCacheDiscovered(cell)) {
       cache.setStyle({ color: "#4a4" }); // discovered caches are green
     } else {
@@ -402,6 +398,7 @@ class GameFacade {
       //mark cache as discovered when opened
       this.gameState.discoverCache(cell);
       cache.setStyle({ color: "#4a4" });
+
       const div = document.createElement("div");
 
       //compact coin representation
