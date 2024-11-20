@@ -542,7 +542,7 @@ class GameFacade {
   //current starting location inspired by example.ts
   initializePlayer(): leaflet.Marker {
     const marker = leaflet.marker(GameFacade.CLASSROOM);
-    marker.bindTooltip("Starting Location!");
+    marker.bindTooltip("You!");
     marker.addTo(this.map);
     return marker;
   }
