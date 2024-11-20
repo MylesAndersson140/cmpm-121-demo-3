@@ -4,6 +4,134 @@ import "./leafletWorkaround.ts";
 import leaflet from "leaflet";
 import luck from "./luck.ts";
 
+interface GeoLocation {
+  isTracking: boolean;
+  watchId: number | null;
+}
+
+class LocationTracker {
+  game: GameFacade;
+  state: GeoLocation;
+  button: HTMLButtonElement | null;
+
+  constructor(game: GameFacade) {
+    this.game = game;
+    this.state = {
+      isTracking: false,
+      watchId: null,
+    };
+
+    this.button = document.getElementById(
+      "toggleLocation",
+    ) as HTMLButtonElement;
+    this.initializeButton();
+  }
+
+  initializeButton() {
+    if (!this.button) {
+      return;
+    }
+
+    this.button.addEventListener("click", () => this.toggleTracking());
+
+    //ensures that your device is capable of performing geolocation
+    if (!this.isGeolocationSupported()) {
+      this.button.disabled = true;
+      this.button.title = "Geolocation not supported.";
+    }
+  }
+
+  isGeolocationSupported(): boolean {
+    return "geolocation" in navigator;
+  }
+
+  toggleTracking() {
+    if (!this.button) {
+      return;
+    }
+
+    if (this.state.isTracking) {
+      this.stopTracking();
+    } else {
+      this.startTracking();
+    }
+  }
+
+  startTracking() {
+    if (!this.button || !this.isGeolocationSupported()) {
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        //inital position
+        this.updatePosition(position);
+
+        //information needed to determine potential location or errors
+        const watchId = navigator.geolocation.watchPosition(
+          (pos) => this.updatePosition(pos),
+          (error) => this.handleError(error),
+          {
+            enableHighAccuracy: false, // causes the program to run exceedingly slow if true
+            maximumAge: 1000,
+            timeout: 5000,
+          },
+        );
+
+        this.state.watchId = watchId;
+        this.state.isTracking = true;
+        this.button!.style.backgroundColor = "#4a4";
+      },
+      (error) => this.handleError(error),
+    );
+  }
+
+  stopTracking() {
+    if (!this.button) {
+      return;
+    }
+    if (this.state.watchId !== null) {
+      navigator.geolocation.clearWatch(this.state.watchId);
+      this.state.watchId = null;
+    }
+
+    this.state.isTracking = false;
+    this.button.style.backgroundColor = "";
+  }
+
+  updatePosition(position: GeolocationPosition) {
+    const { latitude, longitude } = position.coords;
+
+    //leaflet representation
+    const gamePosition = leaflet.latLng(latitude, longitude);
+
+    //updating
+    this.game.playerMarker.setLatLng(gamePosition);
+    this.game.updatePlayerPosition();
+  }
+
+  handleError(error: GeolocationPositionError) {
+    let errorMessage = "Error: ";
+
+    switch (error.code) {
+      case error.PERMISSION_DENIED:
+        errorMessage += "Permission Denied";
+        break;
+      case error.POSITION_UNAVAILABLE:
+        errorMessage += "Position Unavailable";
+        break;
+      case error.TIMEOUT:
+        errorMessage += "Timeout";
+        break;
+      default:
+        errorMessage += "Unknown";
+    }
+
+    console.error(errorMessage);
+    this.stopTracking();
+  }
+}
+
 //Inspired by the flyweight cell representations found on slide 20.
 interface Cell {
   readonly i: number;
@@ -186,6 +314,14 @@ class GameFacade {
   gameState: GameState;
   playerMarker: leaflet.Marker;
   board: Board;
+  locationTracker: LocationTracker;
+  saver: GameSaver;
+
+  //polyline
+  path: leaflet.Polyline;
+  positions: leaflet.LatLng[];
+
+  resetButton: HTMLButtonElement | null;
 
   constructor() {
     this.board = new Board(
@@ -196,8 +332,66 @@ class GameFacade {
     this.gameState = new GameState();
     this.map = this.initializeMap();
     this.playerMarker = this.initializePlayer();
-    this.initializeCaches();
+
+    //positions array and polyline
+    this.positions = [this.playerMarker.getLatLng()];
+    this.path = leaflet.polyline(this.positions, {
+      color: "#FF8888",
+      weight: 3,
+      opacity: 0.7,
+    }).addTo(this.map);
+
+    //initalizing the saver before caches to maintain integrity
+    this.saver = new GameSaver(this);
+
+    //ensuring there is no save state
+    if (!this.saver.loadGame()) {
+      this.initializeCaches();
+    }
+
     this.initializeMovementControls();
+    this.locationTracker = new LocationTracker(this);
+
+    this.resetButton = document.getElementById("reset") as HTMLButtonElement;
+    this.resetButton.addEventListener("click", () => this.resetGame());
+  }
+
+  resetGame() {
+    if (!confirm("Are you sure you want to reset the game?")) {
+      return;
+    }
+
+    //resetting movement history
+    this.positions = [GameFacade.CLASSROOM];
+    this.path.setLatLngs(this.positions);
+
+    //resetting start position
+    this.playerMarker.setLatLng(GameFacade.CLASSROOM);
+    this.map.panTo(GameFacade.CLASSROOM);
+
+    //resetting caches
+    this.activeCaches.forEach((cache) => cache.remove());
+    this.activeCaches.clear();
+
+    //resetting the game state
+    this.gameState = new GameState();
+
+    //new caches
+    this.initializeCaches();
+
+    //resetting location tracking
+    if (this.locationTracker.state.isTracking) {
+      this.locationTracker.stopTracking();
+    }
+
+    //reset save state
+    this.saver.clearSavedGame();
+
+    //save the reset version of the game
+    this.saver.saveGame();
+
+    //new caches in visual
+    this.updateVisibleCaches(GameFacade.CLASSROOM);
   }
 
   //Will refactor later...
@@ -237,12 +431,17 @@ class GameFacade {
   updatePlayerPosition() {
     const newPos = this.playerMarker.getLatLng();
 
+    //Adding new positions and updating movement history
+    this.positions.push(newPos);
+    this.path.setLatLngs(this.positions);
+
     //Ensures the map moves with the player
     this.map.panTo(newPos);
 
-    //this.playerMarker.setTooltipContent(`Position:${newPos.lat.toFixed(5)}, ${newPos.lng.toFixed(5)}`);
-
     this.updateVisibleCaches(newPos);
+
+    //save game after each player movement
+    this.saver.saveGame();
   }
 
   updateVisibleCaches(position: leaflet.LatLng) {
@@ -398,6 +597,7 @@ class GameFacade {
       //mark cache as discovered when opened
       this.gameState.discoverCache(cell);
       cache.setStyle({ color: "#4a4" });
+      this.saver.saveGame();
 
       const div = document.createElement("div");
 
@@ -425,16 +625,130 @@ class GameFacade {
       //Event listeners inspired by example.ts
       div.querySelector("#collect")?.addEventListener("click", () => {
         this.gameState.collectCoin(cell);
+        this.saver.saveGame();
         cache.closePopup();
       });
 
       div.querySelector("#deposit")?.addEventListener("click", () => {
         this.gameState.depositCoin(cell);
+        this.saver.saveGame();
         cache.closePopup();
       });
 
       return div;
     });
+  }
+}
+
+interface SaveGameState {
+  carriedCoins: Coin[];
+  cacheInventories: Array<[string, CacheMemento]>;
+  playerPosition: {
+    lat: number;
+    lng: number;
+  };
+  pathHistory: Array<{
+    lat: number;
+    lng: number;
+  }>;
+}
+
+class GameSaver {
+  static STORAGE_KEY = "geocacheGameState";
+  static AUTO_SAVE_TIMER = 60000; //1 min
+  game: GameFacade;
+  autoSaveTimer: number | undefined;
+
+  constructor(game: GameFacade) {
+    this.game = game;
+    this.autoSave();
+  }
+
+  autoSave() {
+    this.autoSaveTimer = globalThis.setInterval(() => {
+      this.saveGame();
+    }, GameSaver.AUTO_SAVE_TIMER);
+  }
+
+  saveGame() {
+    try {
+      const gameState: SaveGameState = {
+        carriedCoins: this.game.gameState.carriedCoins,
+        cacheInventories: Array.from(this.game.gameState.cacheStates.entries()),
+        playerPosition: {
+          lat: this.game.playerMarker.getLatLng().lat,
+          lng: this.game.playerMarker.getLatLng().lng,
+        },
+
+        pathHistory: this.game.positions.map((pos) => ({
+          lat: pos.lat,
+          lng: pos.lng,
+        })),
+      };
+
+      localStorage.setItem(
+        GameSaver.STORAGE_KEY,
+        JSON.stringify(gameState),
+      );
+
+      console.log("Game Saved!");
+    } catch (error) {
+      console.error("Unable to save game: ", error);
+    }
+  }
+
+  loadGame(): boolean {
+    try {
+      const lastSave = localStorage.getItem(GameSaver.STORAGE_KEY);
+
+      if (!lastSave) {
+        return false;
+      }
+
+      const gameState: SaveGameState = JSON.parse(lastSave);
+
+      //restoring coins
+      this.game.gameState.carriedCoins = gameState.carriedCoins;
+
+      //restoring cache inventories
+      this.game.gameState.cacheStates.clear();
+      gameState.cacheInventories.forEach(([key, memento]) => {
+        this.game.gameState.cacheStates.set(key, memento);
+      });
+
+      //loading players last position
+      const position = leaflet.latLng(
+        gameState.playerPosition.lat,
+        gameState.playerPosition.lng,
+      );
+      this.game.playerMarker.setLatLng(position);
+      this.game.map.panTo(position);
+
+      //restore polyline
+      if (gameState.pathHistory) {
+        this.game.positions = gameState.pathHistory.map((pos) =>
+          leaflet.latLng(pos.lat, pos.lng)
+        );
+        this.game.path.setLatLngs(this.game.positions);
+      }
+      this.game.updateVisibleCaches(position);
+
+      console.log("Game Loaded!");
+      return true;
+    } catch (error) {
+      console.log("Could not load game: ", error);
+      return false;
+    }
+  }
+
+  clearSavedGame() {
+    localStorage.removeItem(GameSaver.STORAGE_KEY);
+  }
+
+  destroy() {
+    if (this.autoSaveTimer) {
+      clearInterval(this.autoSaveTimer);
+    }
   }
 }
 
