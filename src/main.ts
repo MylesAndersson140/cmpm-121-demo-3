@@ -356,19 +356,6 @@ class GameFacade {
     this.resetButton.addEventListener("click", () => this.resetGame());
   }
 
-  resetGame() {
-    if (!this.confirmReset()) {
-      return;
-    }
-
-    this.resetMovementHistory();
-    this.resetPlayerPosition();
-    this.resetCaches();
-    this.resetGameState();
-    this.resetLocationTracking();
-    this.resetAndSaveGame();
-  }
-
   confirmReset(): boolean {
     return confirm("Are you sure you want to reset the game?");
   }
@@ -403,6 +390,19 @@ class GameFacade {
     this.saver.clearSavedGame();
     this.saver.saveGame();
     this.updateVisibleCaches(GameFacade.CLASSROOM);
+  }
+
+  resetGame() {
+    if (!this.confirmReset()) {
+      return;
+    }
+
+    this.resetMovementHistory();
+    this.resetPlayerPosition();
+    this.resetCaches();
+    this.resetGameState();
+    this.resetLocationTracking();
+    this.resetAndSaveGame();
   }
 
   moveNorth() {
@@ -680,21 +680,41 @@ class GameSaver {
     }, GameSaver.AUTO_SAVE_TIMER);
   }
 
+  private saveCarriedCoins(): Coin[] {
+    return this.game.gameState.carriedCoins;
+  }
+
+  private saveCacheInventories(): Array<[string, CacheMemento]> {
+    return Array.from(this.game.gameState.cacheStates.entries());
+  }
+
+  private savePlayerPosition() {
+    const position = this.game.playerMarker.getLatLng();
+    return {
+      lat: position.lat,
+      lng: position.lng,
+    };
+  }
+
+  private savePathHistory() {
+    return this.game.positions.map((pos) => ({
+      lat: pos.lat,
+      lng: pos.lng,
+    }));
+  }
+
+  private assembleGameState(): SaveGameState {
+    return {
+      carriedCoins: this.saveCarriedCoins(),
+      cacheInventories: this.saveCacheInventories(),
+      playerPosition: this.savePlayerPosition(),
+      pathHistory: this.savePathHistory(),
+    };
+  }
+
   saveGame() {
     try {
-      const gameState: SaveGameState = {
-        carriedCoins: this.game.gameState.carriedCoins,
-        cacheInventories: Array.from(this.game.gameState.cacheStates.entries()),
-        playerPosition: {
-          lat: this.game.playerMarker.getLatLng().lat,
-          lng: this.game.playerMarker.getLatLng().lng,
-        },
-
-        pathHistory: this.game.positions.map((pos) => ({
-          lat: pos.lat,
-          lng: pos.lng,
-        })),
-      };
+      const gameState = this.assembleGameState();
 
       localStorage.setItem(
         GameSaver.STORAGE_KEY,
