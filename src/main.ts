@@ -357,44 +357,54 @@ class GameFacade {
   }
 
   resetGame() {
-    if (!confirm("Are you sure you want to reset the game?")) {
+    if (!this.confirmReset()) {
       return;
     }
 
-    //resetting movement history
+    this.resetMovementHistory();
+    this.resetPlayerPosition();
+    this.resetCaches();
+    this.resetGameState();
+    this.resetLocationTracking();
+    this.resetAndSaveGame();
+  }
+
+  confirmReset(): boolean {
+    return confirm("Are you sure you want to reset the game?");
+  }
+
+  resetMovementHistory() {
     this.positions = [GameFacade.CLASSROOM];
     this.path.setLatLngs(this.positions);
+  }
 
-    //resetting start position
+  resetPlayerPosition() {
     this.playerMarker.setLatLng(GameFacade.CLASSROOM);
     this.map.panTo(GameFacade.CLASSROOM);
+  }
 
-    //resetting caches
+  resetCaches() {
     this.activeCaches.forEach((cache) => cache.remove());
     this.activeCaches.clear();
+  }
 
-    //resetting the game state
+  resetGameState() {
     this.gameState = new GameState();
-
-    //new caches
     this.initializeCaches();
+  }
 
-    //resetting location tracking
+  resetLocationTracking() {
     if (this.locationTracker.state.isTracking) {
       this.locationTracker.stopTracking();
     }
+  }
 
-    //reset save state
+  resetAndSaveGame() {
     this.saver.clearSavedGame();
-
-    //save the reset version of the game
     this.saver.saveGame();
-
-    //new caches in visual
     this.updateVisibleCaches(GameFacade.CLASSROOM);
   }
 
-  //Will refactor later...
   moveNorth() {
     const currentPos = this.playerMarker.getLatLng();
     this.playerMarker.setLatLng([
